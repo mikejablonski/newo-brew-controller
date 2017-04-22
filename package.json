@@ -9,6 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "dateformat": "^2.0.0",
     "liquid-pid": "^1.0.0",
     "max31855": "git+https://github.com/maugdog/max31855.git"
   }
