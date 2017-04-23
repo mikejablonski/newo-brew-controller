@@ -16,7 +16,7 @@ var tempStopTime;
 
 pidController = new liquidPID({
   temp: {
-    ref: 21         // Point temperature                                       
+    ref: 23         // Point temperature                                       
   },
   Pmax: WindowSize,       // Max power (output) [Window Size]
   
@@ -30,6 +30,7 @@ var relayHeat = new Gpio(pinGpioNumHeat, 'out'); // uses "GPIO" numbering
 var windowStartTime = new Date().getTime();
 var readVal;
 var prevTemp = 0;
+var hasHitTemp = false;
 
 console.log('Target temp:', pidController.getRefTemperature());
 
@@ -50,7 +51,8 @@ function pid() {
         var now = new Date().getTime();
         var relayStatus = '';
         
-        if (actualTemp >= pidController.getRefTemperature()) {
+        if (!hasHitTemp && (actualTemp >= pidController.getRefTemperature())) {
+          hasHitTemp = true;
           tempHitTime = now;
           tempStopTime = new Date(tempHitTime + tempHoldTime * 60000);
         }
