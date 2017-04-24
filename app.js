@@ -3,17 +3,18 @@
 // example:
 // sudo node app.js IPA1 155
 
-var liquidPID = require('liquid-pid'),
+var liquidPID = require('liquid-pid');
 var actualP = 0;
 var pidController;
 
 // read the command line args
-if (process.argv.length < 4) {
-  console.log("Usage: sudo node app.js <BrewSessionName> <TargetTemp>");
+if (process.argv.length < 5) {
+  console.log("Usage: sudo node app.js <BrewSessionName> <TargetTemp> <TempHoldTime>");
   process.exit();
 }
 var brewSessionName = process.argv[2];  // the brew session name
-var tempHoldTime = process.argv[3];     // time in minutes we hold temp for
+var targetTemp = process.argv[3];       // pid target temp
+var tempHoldTime = process.argv[4];     // time in minutes we hold temp for
 var brewSession;
 
 var loki = require('lokijs');
@@ -41,7 +42,7 @@ var logTimeSpan = 5000; // time between log entries in ms
 
 pidController = new liquidPID({
   temp: {
-    ref: 23         // Point temperature                                       
+    ref: targetTemp     // Point temperature                                       
   },
   Pmax: WindowSize, // Max power (output) [Window Size]
   
@@ -129,6 +130,7 @@ function pid() {
 }
 
 function cleanUp() {
+  db.close();
   console.log('Cleaning up...');
 }
 
@@ -139,18 +141,18 @@ function loadHandler() {
         coll = db.addCollection('brewSessions');
     }
 
-    var brewSession = coll.findOne( {'name': brewSessionName} );
+    brewSession = coll.findOne( {'name': brewSessionName} );
     if (!brewSession) {
       brewSession = {
         'name': brewSessionName,
         'created': new Date().getTime(),
         'mashStartTime': '',
         'mashEndTime': '',
-        'mashTemp': tempHoldTime,
-        'mashTempData': [
-          {}
-        ],
+        'mashHoldTime': tempHoldTime,
+        'mashTemp': targetTemp,
+        'mashTempData': [],
       };
+      coll.insert(brewSession);
     }
 
     // kick off the pid
