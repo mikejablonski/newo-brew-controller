@@ -1,7 +1,7 @@
 // usage
-// node app.js <BrewSessionName> <TargetTemp>
+// node app.js <BrewSessionName> <TargetTemp> <TempHoldTime>
 // example:
-// sudo node app.js IPA1 155
+// sudo node app.js IPA1 155 60
 
 var liquidPID = require('liquid-pid');
 var actualP = 0;
@@ -25,6 +25,7 @@ var db = new loki('brewSessions.json',
         autosave: true, 
         autosaveInterval: 10000 // 10 seconds
       });
+var brewSessionCollection;
 
 var dateFormat = require('dateformat');
 var Gpio = require('onoff').Gpio;
@@ -73,15 +74,6 @@ function pid() {
         actualP = pidController.calculate(actualTemp);	// call with the actual temp
         var now = new Date().getTime();
         
-        // check if we need to log this temp to the database for this brew session
-        if (!prevLogTime || (now - prevLogTime == logTimeSpan)) {
-          // log this temp in the database
-          brewSession.mashTempData.push(
-            {time: new Date().getTime(), temp: actualTemp}
-          );
-          prevLogTime = now;
-        }
-        
         if (!hasHitTemp && (actualTemp >= pidController.getRefTemperature())) {
           hasHitTemp = true;
           tempHitTime = now;
@@ -108,16 +100,27 @@ function pid() {
             relayStatus = "OFF";
         }
 
-        console.log('Target:%s, Temp C:%s, Temp F:%s, ActualP:%s, Relay:%s, Temp Hit:%s, Temp Hold:%s min, Now:%s, Stop:%s',
-          Number(pidController.getRefTemperature()).toFixed(2),
-          Number(actualTemp).toFixed(2),
-          Number(actualTemp * 9/5 + 32).toFixed(2),
-          actualP,
-          relayStatus,
-          tempHitTime ? dateFormat(tempHitTime, "hh:MM:ss:L TT") : "TBD",
-          tempHoldTime,
-          dateFormat(now, "hh:MM:ss:L TT"),
-          tempStopTime ? dateFormat(tempStopTime, "hh:MM:ss:L TT"): "TBD");
+        // check if we need to log this temp to the database for this brew session
+        // and output to the console
+        if (!prevLogTime || (now - prevLogTime == logTimeSpan)) {
+          // log this temp in the database
+          brewSession.mashTempData.push(
+            {time: new Date().getTime(), temp: actualTemp}
+          );
+          brewSessionCollection.update(brewSession);
+          prevLogTime = now;
+
+          console.log('Target:%s, Temp C:%s, Temp F:%s, ActualP:%s, Relay:%s, Temp Hit:%s, Temp Hold:%s min, Now:%s, Stop:%s',
+            Number(pidController.getRefTemperature()).toFixed(2),
+            Number(actualTemp).toFixed(2),
+            Number(actualTemp * 9/5 + 32).toFixed(2),
+            actualP,
+            relayStatus,
+            tempHitTime ? dateFormat(tempHitTime, "hh:MM:ss:L TT") : "TBD",
+            tempHoldTime,
+            dateFormat(now, "hh:MM:ss:L TT"),
+            tempStopTime ? dateFormat(tempStopTime, "hh:MM:ss:L TT"): "TBD");
+        }
 
         // keep calling pid until we hit our temp hold time
         if (!tempHitTime || (tempHitTime + tempHoldTime * 60000) > now) {
@@ -136,12 +139,13 @@ function cleanUp() {
 
 function loadHandler() {
     // if database did not exist it will be empty so I will intitialize here
-    var coll = db.getCollection('brewSessions');
-    if (coll === null) {
-        coll = db.addCollection('brewSessions');
+    brewSessionCollection = db.getCollection('brewSessions');
+    if (brewSessionCollection === null) {
+        brewSessionCollection = db.addCollection('brewSessions');
     }
 
-    brewSession = coll.findOne( {'name': brewSessionName} );
+    // check if the brewSession already exists
+    brewSession = brewSessionCollection.findOne( {'name': brewSessionName} );
     if (!brewSession) {
       brewSession = {
         'name': brewSessionName,
@@ -152,10 +156,15 @@ function loadHandler() {
         'mashTemp': targetTemp,
         'mashTempData': [],
       };
-      coll.insert(brewSession);
+      brewSessionCollection.insert(brewSession);
+      db.saveDatabase();
     }
 
     // kick off the pid
     pid();
 }
 
+process.on('SIGINT', function() {
+    cleanUp();
+    process.exit(0);
+});
