@@ -59,3 +59,6 @@ typings/
 
 # Apple
 .AppleDouble/
+
+# application files
+brewSessions.json
