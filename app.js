@@ -30,6 +30,7 @@ var brewSessionCollection;
 var dateFormat = require('dateformat');
 var Gpio = require('onoff').Gpio;
 var pinGpioNumHeat = 13;
+var pinGpioNumPump = 26;
 var max31855 = require('max31855');
 var thermoSensor = new max31855();
 var actualTemp = 0;
@@ -54,6 +55,7 @@ pidController = new liquidPID({
 });
 
 var relayHeat = new Gpio(pinGpioNumHeat, 'out'); // uses "GPIO" numbering
+var relayPump = new Gpio(pinGpioNumPump, 'out'); // uses "GPIO" numbering
 var windowStartTime = new Date().getTime();
 var readVal;            // value read from the probe
 var prevTemp = 0;       // keep track of the previous temp reading in case of errors from the probe
@@ -133,8 +135,22 @@ function pid() {
 }
 
 function cleanUp() {
-  db.close();
   console.log('Cleaning up...');
+
+  // close the database
+  db.close();
+
+  // turn off the heater
+  readVal = relayHeat.readSync();
+  if (readVal == 0) {
+    relayHeat.writeSync(1); // 0 is on, 1 is off
+  }
+  
+  // turn off the pump
+  readVal = relayPump.readSync();
+  if (readVal == 0) {
+    relayPump.writeSync(1); // 0 is on, 1 is off
+  }
 }
 
 function loadHandler() {
@@ -164,7 +180,14 @@ function loadHandler() {
     pid();
 }
 
+// handle ctrl-c exit
 process.on('SIGINT', function() {
+    cleanUp();
+    process.exit(0);
+});
+
+// handle kill process
+process.on('SIGTERM', function() {
     cleanUp();
     process.exit(0);
 });
