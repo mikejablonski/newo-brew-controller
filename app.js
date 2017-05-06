@@ -1,5 +1,5 @@
 // usage
-// node app.js <BrewSessionName> <TargetTemp> <TempHoldTime>
+// node app.js <BrewSessionName> <TargetTempInDegC> <TempHoldTime>
 // example:
 // sudo node app.js IPA1 155 60
 
@@ -29,8 +29,8 @@ var brewSessionCollection;
 
 var dateFormat = require('dateformat');
 var Gpio = require('onoff').Gpio;
-var pinGpioNumHeat = 13;
-var pinGpioNumPump = 26;
+var pinGpioNumHeat = 5;
+var pinGpioNumPump = 6;
 var max31855 = require('max31855');
 var thermoSensor = new max31855();
 var actualTemp = 0;
@@ -106,8 +106,14 @@ function pid() {
         // and output to the console
         if (!prevLogTime || (now - prevLogTime == logTimeSpan)) {
           // log this temp in the database
+          var logDate = new Date().getTime();
           brewSession.mashTempData.push(
-            {time: new Date().getTime(), temp: actualTemp}
+            {
+              time: logDate,
+              formattedTime: dateFormat(logDate, "hh:MM:ss TT"),
+              tempC: Math.round(actualTemp * 100) / 100,
+              tempF: Math.round((actualTemp * 9/5 + 32) * 100) / 100
+            }
           );
           brewSessionCollection.update(brewSession);
           prevLogTime = now;
