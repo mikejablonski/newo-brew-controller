@@ -1,7 +1,7 @@
 // usage
 // node app.js <BrewSessionName> <TargetTempInDegC> <TempHoldTime>
 // example:
-// sudo node app.js IPA1 155 60
+// sudo node app.js IPA1 68 60
 
 var liquidPID = require('liquid-pid');
 var actualP = 0;
@@ -40,7 +40,7 @@ var tempHitTime;        // time when we hit the mash temp
 var tempStopTime;       // time when we turn off the heat
 var prevLogTime;        // previous logged timestamp in the pid loop
 
-var logTimeSpan = 5000; // time between log entries in ms
+var logTimeSpan = 30000; // time between log entries in ms
 
 pidController = new liquidPID({
   temp: {
@@ -116,6 +116,7 @@ function pid() {
             }
           );
           brewSessionCollection.update(brewSession);
+          db.saveDatabase();
           prevLogTime = now;
 
           console.log('Target:%s, Temp C:%s, Temp F:%s, ActualP:%s, Relay:%s, Temp Hit:%s, Temp Hold:%s min, Now:%s, Stop:%s',
@@ -180,6 +181,12 @@ function loadHandler() {
       };
       brewSessionCollection.insert(brewSession);
       db.saveDatabase();
+    }
+
+    // turn on the pump
+    readVal = relayPump.readSync();
+    if (readVal == 0) {
+      relayPump.writeSync(0); // 0 is on, 1 is off
     }
 
     // kick off the pid
