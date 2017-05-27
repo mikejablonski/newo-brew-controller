@@ -7,6 +7,31 @@ var liquidPID = require('liquid-pid');
 var actualP = 0;
 var pidController;
 
+const winston = require('winston');
+const fs = require('fs');
+const env = process.env.NODE_ENV || 'development';
+const logDir = 'logs';
+// Create the log directory if it does not exist
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir);
+}
+const tsFormat = () => (new Date()).toLocaleTimeString();
+const logger = new (winston.Logger)({
+  transports: [
+    // colorize the output to the console
+    new (winston.transports.Console)({
+      timestamp: tsFormat,
+      colorize: true,
+      level: 'info'
+    }),
+    new (winston.transports.File)({
+      filename: `${logDir}/session.log`,
+      timestamp: tsFormat,
+      level: env === 'development' ? 'debug' : 'info'
+    })
+  ]
+});
+
 // read the command line args
 if (process.argv.length < 5) {
   console.log("Usage: sudo node app.js <BrewSessionName> <TargetTemp> <TempHoldTime>");
@@ -80,17 +105,33 @@ function pid() {
           hasHitTemp = true;
           tempHitTime = now;
           tempStopTime = new Date(tempHitTime + tempHoldTime * 60000);
+          
+          // log the mash start to the database
+          brewSession.mashStartTime = tempHitTime;
+          brewSession.formattedMashStartTime = dateFormat(tempHitTime, "hh:MM:ss TT");
+          brewSessionCollection.update(brewSession);
+          db.saveDatabase(function(err) {
+            logger.info('Save database completed. Mash start time.');
+            if (err) {
+              logger.error('Save database error.', {error: err})
+            }
+          });
         }
+
+        //logger.verbose("Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", now - windowStartTime, WindowSize, actualP, relayStatus);
 
         if ((now - windowStartTime) > WindowSize) {
             // time to shift the Relay Window
+            logger.verbose("Shift relay window.");
             windowStartTime += WindowSize;
         }
         
-        if (actualP > (now - windowStartTime)) {
+        // changed to >= to try and prevent flipping while initially heating
+        if (actualP >= (now - windowStartTime)) {
             readVal = relayHeat.readSync();
             if (readVal == 1) {
               relayHeat.writeSync(0); // 0 is on, 1 is off
+              logger.verbose("Turning heat on. Now-windowStartTime: %s, WindowSize: %s, actualP: %s", now - windowStartTime, WindowSize, actualP);
             }
             relayStatus = "ON ";
         }
@@ -98,6 +139,7 @@ function pid() {
             readVal = relayHeat.readSync();
             if (readVal == 0) {
               relayHeat.writeSync(1); // 0 is on, 1 is off
+              logger.verbose("Turning heat off. Now-windowStartTime: %s, WindowSize: %s, actualP: %s", now - windowStartTime, WindowSize, actualP);
             }
             relayStatus = "OFF";
         }
@@ -116,10 +158,15 @@ function pid() {
             }
           );
           brewSessionCollection.update(brewSession);
-          db.saveDatabase();
+          db.saveDatabase(function(err) {
+            logger.info('Save database completed.');
+            if (err) {
+              logger.error('Save database error.', {error: err})
+            }
+          });
           prevLogTime = now;
 
-          console.log('Target:%s, Temp C:%s, Temp F:%s, ActualP:%s, Relay:%s, Temp Hit:%s, Temp Hold:%s min, Now:%s, Stop:%s',
+          logger.info('Target:%s, Temp C:%s, Temp F:%s, ActualP:%s, Relay:%s, Temp Hit:%s, Temp Hold:%s min, Now:%s, Stop:%s',
             Number(pidController.getRefTemperature()).toFixed(2),
             Number(actualTemp).toFixed(2),
             Number(actualTemp * 9/5 + 32).toFixed(2),
@@ -136,13 +183,27 @@ function pid() {
           pid();
         }
         else {
+          logger.info("Mash complete. Running cleanup.")
+
+          // log the mash end to the database
+          var logDate = new Date().getTime();
+          brewSession.mashEndTime = logDate;
+          brewSession.formattedMashEndTime = dateFormat(logDate, "hh:MM:ss TT");
+          brewSessionCollection.update(brewSession);
+          db.saveDatabase(function(err) {
+            logger.info('Save database completed. Mash end time.');
+            if (err) {
+              logger.error('Save database error.', {error: err})
+            }
+          });
+
           cleanUp();
         }
     });
 }
 
 function cleanUp() {
-  console.log('Cleaning up...');
+  logger.info('Cleaning up...');
 
   // close the database
   db.close();
@@ -151,16 +212,20 @@ function cleanUp() {
   readVal = relayHeat.readSync();
   if (readVal == 0) {
     relayHeat.writeSync(1); // 0 is on, 1 is off
+    logger.verbose("Turn off heater.");
   }
   
   // turn off the pump
   readVal = relayPump.readSync();
   if (readVal == 0) {
     relayPump.writeSync(1); // 0 is on, 1 is off
+    logger.verbose("Turn off pump.");
   }
 }
 
 function loadHandler() {
+    logger.info("Starting session for %s.", brewSessionName);
+
     // if database did not exist it will be empty so I will intitialize here
     brewSessionCollection = db.getCollection('brewSessions');
     if (brewSessionCollection === null) {
@@ -170,23 +235,33 @@ function loadHandler() {
     // check if the brewSession already exists
     brewSession = brewSessionCollection.findOne( {'name': brewSessionName} );
     if (!brewSession) {
+      var createdDate = new Date().getTime();
       brewSession = {
         'name': brewSessionName,
-        'created': new Date().getTime(),
+        'created': createdDate,
+        'formattedCreated': dateFormat(createdDate, "mm-dd-yyyy"),
         'mashStartTime': '',
+        'formattedMashStartTime': '',
         'mashEndTime': '',
+        'formattedMashEndTime': '',
         'mashHoldTime': tempHoldTime,
         'mashTemp': targetTemp,
         'mashTempData': [],
       };
       brewSessionCollection.insert(brewSession);
-      db.saveDatabase();
+      db.saveDatabase(function(err) {
+        logger.info('Save database completed.');
+        if (err) {
+          logger.error('Save database error.', {error: err})
+        }
+      });
     }
 
     // turn on the pump
     readVal = relayPump.readSync();
     if (readVal == 0) {
       relayPump.writeSync(0); // 0 is on, 1 is off
+      logger.verbose("Turn on pump.");
     }
 
     // kick off the pid
@@ -195,12 +270,14 @@ function loadHandler() {
 
 // handle ctrl-c exit
 process.on('SIGINT', function() {
+    logger.verbose("Received SIGINT. cleaning up before exit.");
     cleanUp();
     process.exit(0);
 });
 
 // handle kill process
 process.on('SIGTERM', function() {
+    logger.verbose("Received SIGTERM. cleaning up before exit.");
     cleanUp();
     process.exit(0);
 });

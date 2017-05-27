@@ -13,6 +13,7 @@
     "liquid-pid": "^1.0.0",
     "lokijs": "^1.4.3",
     "max31855": "git+https://github.com/maugdog/max31855.git",
-    "onoff": "^1.1.2"
+    "onoff": "^1.1.2",
+    "winston": "^2.3.1"
   }
 }
