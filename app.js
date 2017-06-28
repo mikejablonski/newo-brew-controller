@@ -152,7 +152,8 @@ function pid() {
 
       // check if we need to log this temp to the database for this brew session
       // and output to the console
-      if (!prevLogTime || (now - prevLogTime == logTimeSpan)) {
+      // TODO: Check if changing this to >= fixes logging bug.
+      if (!prevLogTime || (now - prevLogTime >= logTimeSpan)) {
         // log this temp in the database
         var logDate = new Date().getTime();
         brewSession.mashTempData.push(
