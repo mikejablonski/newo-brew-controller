@@ -9,6 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "child-process-promise": "^2.2.1",
     "dateformat": "^2.0.0",
     "liquid-pid": "^1.0.0",
     "lokijs": "^1.4.3",
