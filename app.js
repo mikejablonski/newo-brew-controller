@@ -290,12 +290,7 @@ function loadHandler() {
     }
 
     // What is the brew session status?
-    // if stopped, we should start up on the current step.
-    // if running, exit with warning?
-    // if complete, just exit and log a warning.
-
-    // loop until the brew session is complete
-    // we could also be killed outside of this program by someone else
+    // 1 = Stopped, 2 = Running, 3 = Complete
     if (brewSession.status != 3) { // status 3 = completed
       // turn on the pump
       readVal = relayPump.readSync();
@@ -327,6 +322,14 @@ function moveValve() {
 
 function checkForNextStep() {
   // What step are we on?
+  brewSession.status = 2; // running
+  brewSessionCollection.update(brewSession);
+  db.saveDatabase(function(err) {
+    if (err) {
+      logger.error('Save database error.', {error: err})
+    }
+  });
+
   if (brewSession.step == 1) {
     // pid loop with the temp set to the first mash step, duration 1 min
     logger.info("Step 1: Heat water for mash.");
@@ -396,6 +399,14 @@ function checkForNextStep() {
   else {
     logger.info("Steps complete.");
     // We're done. Shut down and clean up.
+    brewSession.status = 3; // complete
+    brewSessionCollection.update(brewSession);
+    db.saveDatabase(function(err) {
+      logger.info('Save database completed. All brew session steps complete.');
+      if (err) {
+        logger.error('Save database error.', {error: err})
+      }
+    });
     cleanUp();
   }
 }
