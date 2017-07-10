@@ -62,6 +62,10 @@ typings/
 
 # application files
 brewSessions.json
+brewSessions.json.default
+test
 
 # temp loki files
 *.json~
+
+brewSessions.json.default

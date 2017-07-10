@@ -27,7 +27,7 @@ const logger = new (winston.Logger)({
       level: 'info'
     }),
     new (winston.transports.File)({
-      filename: `${logDir}/session.log`,
+      filename: `${logDir}/log.json`,
       timestamp: tsFormat,
       level: env === 'development' ? 'debug' : 'info'
     })
@@ -40,18 +40,16 @@ if (process.argv.length < 3) {
   process.exit();
 }
 var brewSessionId = process.argv[2];  // the brew session id
-//var targetTemp = process.argv[3];       // pid target temp
-//var tempHoldTime = process.argv[4];     // time in minutes we hold temp for
 var brewSession;
 
 var loki = require('lokijs');
 var db = new loki('brewSessions.json', 
-      {
-        autoload: true,
-        autoloadCallback : loadHandler,
-        autosave: true, 
-        autosaveInterval: 10000 // 10 seconds
-      });
+  {
+    autoload: true,
+    autoloadCallback : loadHandler,
+    autosave: true, 
+    autosaveInterval: 10000 // 10 seconds
+  });
 var brewSessionCollection;
 
 var dateFormat = require('dateformat');
@@ -87,18 +85,16 @@ var prevLogTime;        // previous logged timestamp in the pid loop
 var hasHitTemp = false; // have we hit our temp yet?
 
 function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp) {
-  if (SIMULATION_MODE) {
-    logger.verbose("Running PID in simulation mode.");
-  }
+  
   pidController.setPoint(targetTemp);
 
   exec('python ../MAX31865/max31865.py')
     .then(function (result) {
       var stdout = result.stdout;
       var stderr = result.stderr;
-      
       var actualTemp;
 
+      // this simulate temp increase logic is not right, but it seems to work.
       if (SIMULATION_MODE) {
         actualTemp = prevTemp + 10;
       }
@@ -114,8 +110,7 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
       }
 
       if (SIMULATION_MODE && !hasHitTemp) {
-        logger.verbose("PrevTemp: ", prevTemp);
-        actualTemp += 2;
+        actualTemp += 10;
         logger.verbose("[SIMULATION MODE] Setting temp to ", actualTemp);
         tempHoldTime = 0.25;
       }
@@ -130,7 +125,7 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         tempStopTime = new Date(tempHitTime + tempHoldTime * 60000);
         
         // log the mash or boil start to the database
-        if (brewSession.step == 1 || brewSession.step == 3) {
+        if (brewSession.step == 3) {
           logger.verbose(`looking for ${targetTemp}, ${tempHoldTime}`);
           // find the mash step we are working with
           mashStep = brewSession.mashSteps.find(function(ms) {
@@ -143,7 +138,7 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         
         brewSessionCollection.update(brewSession);
         db.saveDatabase(function(err) {
-          logger.info('Save database completed. Pid start time.');
+          logger.info('Save database completed. Pid hit temp start time.');
           if (err) {
             logger.error('Save database error.', {error: err});
           }
@@ -154,7 +149,7 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
 
       if ((now - windowStartTime) > WindowSize) {
         // time to shift the Relay Window
-        logger.verbose("Shift relay window.");
+        //logger.verbose("Shift relay window.");
         windowStartTime += WindowSize;
       }
       
@@ -192,7 +187,7 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         );
         brewSessionCollection.update(brewSession);
         db.saveDatabase(function(err) {
-          logger.info('Save database completed.');
+          //logger.info('Save database completed.');
           if (err) {
             logger.error('Save database error.', {error: err})
           }
@@ -222,7 +217,7 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         // log the pid end to the database
         
         // update some brew session details depending on the step
-        if (brewSession.step == 1 || brewSession.step == 3) {
+        if (brewSession.step == 3) {
           // find the mash step we are working with
           mashStep = brewSession.mashSteps.find(function(ms) {
             return (ms.temp == targetTemp);
@@ -231,17 +226,6 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
           mashStep.formattedMashEndTime = dateFormat(logDate, "hh:MM:ss TT");
         }
         
-        // increment the brew session step number
-        brewSession.step = brewSession.step + 1;
-
-        brewSessionCollection.update(brewSession);
-        db.saveDatabase(function(err) {
-          logger.info('Save database completed. Pid loop complete.');
-          if (err) {
-            logger.error('Save database error.', {error: err})
-          }
-        });
-
         // turn off the heater
         readVal = relayHeat.readSync();
         if (readVal == 0) {
@@ -249,8 +233,19 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
           logger.verbose("Turn off heater.");
         }
 
-        checkForNextStep();
-        //cleanUp();
+        // increment the brew session step number
+        if (brewSession.step != 3) { // mashing can be multiple steps.
+          brewSession.step = brewSession.step + 1;
+        }
+
+        brewSessionCollection.update(brewSession);
+        db.saveDatabase(function(err) {
+          logger.info('Save database completed. Pid loop complete.');
+          if (err) {
+            logger.error('Save database error.', {error: err})
+          }
+          checkForNextStep();
+        });
       }
     }); // end of exec python then
 }
@@ -295,25 +290,24 @@ function loadHandler() {
     }
 
     // What is the brew session status?
-
     // if stopped, we should start up on the current step.
-    
     // if running, exit with warning?
-
     // if complete, just exit and log a warning.
 
     // loop until the brew session is complete
     // we could also be killed outside of this program by someone else
-    if (brewSession.status != 3) {
-
+    if (brewSession.status != 3) { // status 3 = completed
       // turn on the pump
       readVal = relayPump.readSync();
       if (readVal == 0) {
         relayPump.writeSync(0); // 0 is on, 1 is off
         logger.verbose("Turn on pump.");
       }
-
       checkForNextStep();
+    }
+    else {
+      // we are complete. just exit.
+      cleanUp();
     }
 }
 
@@ -322,62 +316,87 @@ function moveValve() {
   brewSession.step += 1;
 
   brewSessionCollection.update(brewSession);
-    db.saveDatabase(function(err) {
-      logger.info('Save database completed. Move valve.');
-      if (err) {
-        logger.error('Save database error.', {error: err})
-      }
-    });
-
+  db.saveDatabase(function(err) {
+    logger.info('Save database completed. Move valve.');
+    if (err) {
+      logger.error('Save database error.', {error: err})
+    }
     checkForNextStep();
+  });
 }
 
 function checkForNextStep() {
   // What step are we on?
-  switch (brewSession.step) {
-    case 1: // Heat water for mash
-      // pid loop with the temp set to the first mash step, duration 1 min
-      logger.info("Step 1: Heat water for mash.");
-      var targetTemp = brewSession.mashSteps[0].temp;
-      var tempHoldTime = 1;
-      tempHitTime = null;
-      tempStopTime = null;
-      prevLogTime = null;
-      hasHitTemp = false;
-      pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
-      break;
-    case 2: // Transfer water to MT (dough-in)
-      // switch the output valve to the MT
-      logger.info("Step 2: Transfer water to MT (dough-in).");
-      moveValve();
-      break;
-    case 3: // Mash
-      logger.info("Step 3: Mash");
-      // run the pid for each mash step
-      // look for a mashEndTime to see if we need to run the pid for this mash step
-      
-      break;
-    case 4: // Transfer wort to BK
-      logger.info("Step 4: Transfer wort to BK.");
-      // switch the output valve to the BK
-      moveValve();
-      break;
-    case 5: // Boil
-      logger.info("Step 5: Boil.");
-      // run the pid for the boil
-      var targetTemp = brewSession.boil.temp;
-      var tempHoldTime = brewSession.boil.time;
-      tempHitTime = null;
-      tempStopTime = null;
-      prevLogTime = null;
-      hasHitTemp = false;
-      pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
-      break;
-    default:
-      logger.info("Steps complete.");
-      // We're done. Shut down and clean up.
-      cleanUp();
-      break;
+  if (brewSession.step == 1) {
+    // pid loop with the temp set to the first mash step, duration 1 min
+    logger.info("Step 1: Heat water for mash.");
+    var targetTemp = brewSession.mashSteps[0].temp - 1;
+    var tempHoldTime = 1;
+    tempHitTime = null;
+    tempStopTime = null;
+    prevLogTime = null;
+    hasHitTemp = false;
+    pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
+  } 
+  else if (brewSession.step == 2) {
+    // switch the output valve to the MT
+    logger.info("Step 2: Transfer water to MT (dough-in).");
+    moveValve();
+  }
+  else if (brewSession.step == 3) {
+    logger.info("Step 3: Mash");
+    // run the pid for each mash step
+    // look for a mashEndTime to see if we need to run the pid for this mash step
+    var allMashStepsComplete = true;
+    for (var i=0; i < brewSession.mashSteps.length; i++) {
+      var mashStep = brewSession.mashSteps[i];
+      logger.info(`Looking at mash step with temp: ${mashStep.temp} and time: ${mashStep.time}.`);
+      if (!mashStep.mashEndTime) {
+        allMashStepsComplete = false;
+        logger.info(`Starting mash step with temp: ${mashStep.temp} and time: ${mashStep.time}.`);
+        var targetTemp = mashStep.temp;
+        var tempHoldTime = mashStep.time;
+        tempHitTime = null;
+        tempStopTime = null;
+        prevLogTime = null;
+        hasHitTemp = false;
+        pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
+        break; // important! Or else we'll start all steps at the same time.
+      }
+    }
+    if (allMashStepsComplete) {
+      // increment to the next step
+      brewSession.step += 1;
+      brewSessionCollection.update(brewSession);
+      db.saveDatabase(function(err) {
+        logger.info('Save database completed. All mash steps complete.');
+        if (err) {
+          logger.error('Save database error.', {error: err})
+        }
+        checkForNextStep();
+      });      
+    }
+  }
+  else if (brewSession.step == 4) {
+    logger.info("Step 4: Transfer wort to BK.");
+    // switch the output valve to the BK
+    moveValve();
+  }
+  else if (brewSession.step == 5) {
+    logger.info("Step 5: Boil.");
+    // run the pid for the boil
+    var targetTemp = brewSession.boil.temp;
+    var tempHoldTime = brewSession.boil.time;
+    tempHitTime = null;
+    tempStopTime = null;
+    prevLogTime = null;
+    hasHitTemp = false;
+    pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
+  }
+  else {
+    logger.info("Steps complete.");
+    // We're done. Shut down and clean up.
+    cleanUp();
   }
 }
 
