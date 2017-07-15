@@ -125,7 +125,7 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         tempStopTime = new Date(tempHitTime + tempHoldTime * 60000);
         
         // log the mash or boil start to the database
-        if (brewSession.step == 3) {
+        if (brewSession.step == 3) { // mash
           logger.verbose(`looking for ${targetTemp}, ${tempHoldTime}`);
           // find the mash step we are working with
           mashStep = brewSession.mashSteps.find(function(ms) {
@@ -134,6 +134,10 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
           });
           mashStep.mashStartTime = tempHitTime;
           mashStep.formattedMashStartTime = dateFormat(tempHitTime, "hh:MM:ss TT");  
+        }
+        if (brewSession.step == 5) { // boil
+          brewSession.boil.boilStartTime = tempHitTime;
+          brewSession.boil.formattedBoilStartTime = dateFormat(tempHitTime, "hh:MM:ss TT");
         }
         
         brewSessionCollection.update(brewSession);
@@ -217,13 +221,17 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         // log the pid end to the database
         
         // update some brew session details depending on the step
-        if (brewSession.step == 3) {
+        if (brewSession.step == 3) { // mash
           // find the mash step we are working with
           mashStep = brewSession.mashSteps.find(function(ms) {
             return (ms.temp == targetTemp);
           });
           mashStep.mashEndTime = logDate;
           mashStep.formattedMashEndTime = dateFormat(logDate, "hh:MM:ss TT");
+        }
+        if (brewSession.step == 5) { // boil
+          brewSession.boil.boilEndTime = logDate;
+          brewSession.boil.formattedBoilEndTime = dateFormat(logDate, "hh:MM:ss TT");
         }
         
         // turn off the heater
@@ -251,24 +259,33 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
 }
 
 function cleanUp() {
-  logger.info('Cleaning up...');
+  logger.verbose('Cleaning up...');
+  brewSession.status = 1; // stopped
+  brewSessionCollection.update(brewSession);
+  db.saveDatabase(function(err) {
+    logger.info('Save database completed. Clean up.');
+    if (err) {
+      logger.error('Save database error.', {error: err})
+    }
+    // close the database
+    db.close();
 
-  // close the database
-  db.close();
+    // turn off the heater
+    readVal = relayHeat.readSync();
+    if (readVal == 0) {
+      relayHeat.writeSync(1); // 0 is on, 1 is off
+      logger.verbose("Turn off heater.");
+    }
+    
+    // turn off the pump
+    readVal = relayPump.readSync();
+    if (readVal == 0) {
+      relayPump.writeSync(1); // 0 is on, 1 is off
+      logger.verbose("Turn off pump.");
+    }
 
-  // turn off the heater
-  readVal = relayHeat.readSync();
-  if (readVal == 0) {
-    relayHeat.writeSync(1); // 0 is on, 1 is off
-    logger.verbose("Turn off heater.");
-  }
-  
-  // turn off the pump
-  readVal = relayPump.readSync();
-  if (readVal == 0) {
-    relayPump.writeSync(1); // 0 is on, 1 is off
-    logger.verbose("Turn off pump.");
-  }
+    process.exit(0);
+  });
 }
 
 function loadHandler() {
@@ -286,7 +303,7 @@ function loadHandler() {
       // Brew session not found.
       logger.error('BrewSession not found!', {id: brewSessionId})
       cleanUp();
-      process.exit(0);
+      //process.exit(0);
     }
 
     // What is the brew session status?
@@ -406,8 +423,8 @@ function checkForNextStep() {
       if (err) {
         logger.error('Save database error.', {error: err})
       }
+      cleanUp();
     });
-    cleanUp();
   }
 }
 
@@ -415,12 +432,12 @@ function checkForNextStep() {
 process.on('SIGINT', function() {
     logger.verbose("Received SIGINT. cleaning up before exit.");
     cleanUp();
-    process.exit(0);
+    //process.exit(0);
 });
 
 // handle kill process
 process.on('SIGTERM', function() {
     logger.verbose("Received SIGTERM. cleaning up before exit.");
     cleanUp();
-    process.exit(0);
+    //process.exit(0);
 });
