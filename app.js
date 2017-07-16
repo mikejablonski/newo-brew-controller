@@ -260,7 +260,9 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
 
 function cleanUp() {
   logger.verbose('Cleaning up...');
-  brewSession.status = 1; // stopped
+  if (brewSession.status != 3) { // if we're not done
+    brewSession.status = 1; // mark as stopped
+  }
   brewSessionCollection.update(brewSession);
   db.saveDatabase(function(err) {
     logger.info('Save database completed. Clean up.');
