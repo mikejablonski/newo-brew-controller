@@ -3,7 +3,7 @@
 // example:
 // sudo node app.js 1
 
-var SIMULATION_MODE = true;
+var SIMULATION_MODE = false;
 
 var liquidPID = require('liquid-pid');
 var actualP = 0;
@@ -29,7 +29,7 @@ const logger = new (winston.Logger)({
     new (winston.transports.File)({
       filename: `${logDir}/log.json`,
       timestamp: tsFormat,
-      level: env === 'development' ? 'debug' : 'info'
+      level: 'debug' // env === 'development' ? 'debug' : 'info'
     })
   ]
 });
@@ -54,7 +54,7 @@ var brewSessionCollection;
 
 var dateFormat = require('dateformat');
 var Gpio = require('onoff').Gpio;
-var pinGpioNumHeat = 5;
+var pinGpioNumHeat = 27;
 var pinGpioNumPump = 6;
 var actualTemp = 0;
 var WindowSize = 5000;
@@ -83,6 +83,7 @@ var tempHitTime;        // time when we hit the mash temp
 var tempStopTime;       // time when we turn off the heat
 var prevLogTime;        // previous logged timestamp in the pid loop
 var hasHitTemp = false; // have we hit our temp yet?
+var simulateTemp = 20;
 
 function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp) {
   
@@ -94,23 +95,19 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
       var stderr = result.stderr;
       var actualTemp;
 
-      // this simulate temp increase logic is not right, but it seems to work.
-      if (SIMULATION_MODE) {
-        actualTemp = prevTemp + 10;
-      }
-      else {
-        actualTemp = Number(stdout).toFixed(2);
-      }
+      actualTemp = Number(stdout).toFixed(2);
       
-      if (isNaN(actualTemp)) {
-        actualTemp = prevTemp;
+      if (isNaN(actualTemp) || actualTemp > 300 || actualTemp < 0) {
+        //logger.verbose(`Temp error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
+        actualTemp = Number(prevTemp).toFixed(2);
       }
       else {
-        prevTemp = actualTemp;
+        prevTemp = Number(actualTemp).toFixed(2);
       }
 
       if (SIMULATION_MODE && !hasHitTemp) {
-        actualTemp += 10;
+        simulateTemp += 5;
+        actualTemp = simulateTemp;
         logger.verbose("[SIMULATION MODE] Setting temp to ", actualTemp);
         tempHoldTime = 0.25;
       }
@@ -149,7 +146,7 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         });
       }
 
-      //logger.verbose("Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", now - windowStartTime, WindowSize, actualP, relayStatus);
+      logger.verbose("hasHitTemp: %s, actualTemp: %s, targetTemp: %s, refTemp: %s, Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", hasHitTemp, actualTemp, targetTemp, pidController.getRefTemperature(), now - windowStartTime, WindowSize, actualP, relayStatus);
 
       if ((now - windowStartTime) > WindowSize) {
         // time to shift the Relay Window
@@ -157,19 +154,19 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         windowStartTime += WindowSize;
       }
       
-      // changed to >= to try and prevent flipping while initially heating
-      if (actualP >= (now - windowStartTime)) {
+      // changed to > to try and prevent flipping while initially heating
+      if (actualP > (now - windowStartTime)) {
           readVal = relayHeat.readSync();
-          if (readVal == 1) {
-            relayHeat.writeSync(0); // 0 is on, 1 is off
+          if (readVal == 0) {
+            relayHeat.writeSync(1); // 0 is off on the ssr, 1 is on
             logger.verbose("Turning heat on. Now-windowStartTime: %s, WindowSize: %s, actualP: %s", now - windowStartTime, WindowSize, actualP);
           }
           relayStatus = "ON ";
       }
       else {
           readVal = relayHeat.readSync();
-          if (readVal == 0) {
-            relayHeat.writeSync(1); // 0 is on, 1 is off
+          if (readVal == 1) {
+            relayHeat.writeSync(0); // 0 is off on the ssr, 1 is on
             logger.verbose("Turning heat off. Now-windowStartTime: %s, WindowSize: %s, actualP: %s", now - windowStartTime, WindowSize, actualP);
           }
           relayStatus = "OFF";
@@ -274,8 +271,8 @@ function cleanUp() {
 
     // turn off the heater
     readVal = relayHeat.readSync();
-    if (readVal == 0) {
-      relayHeat.writeSync(1); // 0 is on, 1 is off
+    if (readVal == 1) {
+      relayHeat.writeSync(0); // 0 is off on the ssr, 1 is on
       logger.verbose("Turn off heater.");
     }
     
@@ -317,6 +314,9 @@ function loadHandler() {
         relayPump.writeSync(0); // 0 is on, 1 is off
         logger.verbose("Turn on pump.");
       }
+      // turn off the heat
+      relayHeat.writeSync(1); // 0 is on, 1 is off
+
       checkForNextStep();
     }
     else {
@@ -327,16 +327,21 @@ function loadHandler() {
 
 function moveValve() {
   // simulate for now
-  brewSession.step += 1;
+  logger.info('Simulating valve move');
 
+  moveToNextBrewStep();
+}
+
+function moveToNextBrewStep() {
+  brewSession.step += 1;
   brewSessionCollection.update(brewSession);
   db.saveDatabase(function(err) {
-    logger.info('Save database completed. Move valve.');
+    logger.info('Save database completed. Next step.');
     if (err) {
       logger.error('Save database error.', {error: err})
     }
     checkForNextStep();
-  });
+  });  
 }
 
 function checkForNextStep() {
@@ -352,13 +357,21 @@ function checkForNextStep() {
   if (brewSession.step == 1) {
     // pid loop with the temp set to the first mash step, duration 1 min
     logger.info("Step 1: Heat water for mash.");
-    var targetTemp = brewSession.mashSteps[0].temp - 1;
-    var tempHoldTime = 1;
-    tempHitTime = null;
-    tempStopTime = null;
-    prevLogTime = null;
-    hasHitTemp = false;
-    pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
+    if (brewSession.mashSteps && brewSession.mashSteps.length > 0) {
+      var targetTemp = brewSession.mashSteps[0].temp - 1;
+      var tempHoldTime = 1;
+      tempHitTime = null;
+      tempStopTime = null;
+      prevLogTime = null;
+      hasHitTemp = false;
+      simulateTemp = 20;
+      logger.info(`Starting pid with targetTemp ${targetTemp} for step 1.`);
+      pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
+    }
+    else {
+      logger.info('No mash steps found. Moving to next step.');
+      moveToNextBrewStep();
+    }
   } 
   else if (brewSession.step == 2) {
     // switch the output valve to the MT
@@ -382,6 +395,7 @@ function checkForNextStep() {
         tempStopTime = null;
         prevLogTime = null;
         hasHitTemp = false;
+        simulateTemp = 20;
         pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
         break; // important! Or else we'll start all steps at the same time.
       }
@@ -413,6 +427,7 @@ function checkForNextStep() {
     tempStopTime = null;
     prevLogTime = null;
     hasHitTemp = false;
+    simulateTemp = 20;
     pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
   }
   else {
