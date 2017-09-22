@@ -9,6 +9,7 @@ var liquidPID = require('liquid-pid');
 var actualP = 0;
 var pidController;
 
+var rp = require('request-promise');
 const winston = require('winston');
 const fs = require('fs');
 const env = process.env.NODE_ENV || 'development';
@@ -29,7 +30,9 @@ const logger = new (winston.Logger)({
     new (winston.transports.File)({
       filename: `${logDir}/log.json`,
       timestamp: tsFormat,
-      level: 'debug' // env === 'development' ? 'debug' : 'info'
+      maxsize: 5242880, // 5 MB
+      maxFiles: 10,
+      level: 'verbose' // env === 'development' ? 'debug' : 'info'
     })
   ]
 });
@@ -60,7 +63,7 @@ var actualTemp = 0;
 var WindowSize = 5000;
 
 var exec = require('child-process-promise').exec;
-var logTimeSpan = 30000; // time between log entries in ms
+var logTimeSpan = 5000; // time between log entries in ms
 
 pidController = new liquidPID({
   Pmax: WindowSize, // Max power (output) [Window Size]
@@ -89,21 +92,67 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
   
   pidController.setPoint(targetTemp);
 
-  exec('python ../MAX31865/max31865.py')
-    .then(function (result) {
-      var stdout = result.stdout;
-      var stderr = result.stderr;
-      var actualTemp;
+  // request('http://localhost:3001/temp', { json: true }, (err, res, body) => {
+  //   if (err) { return console.log(err); }
+  //   logger.verbose(`Temp from api ${body.degreesC}.`);
+  // });
+  var rpOptions = {
+    uri: 'http://localhost:3001/temp',
+    json: true // Automatically parses the JSON string in the response
+  }
 
-      actualTemp = Number(stdout).toFixed(2);
-      
-      if (isNaN(actualTemp) || actualTemp > 300 || actualTemp < 0) {
-        //logger.verbose(`Temp error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
-        actualTemp = Number(prevTemp).toFixed(2);
+  rp(rpOptions).then(function(tempData) {
+    //logger.verbose(`Temp from api ${tempData.degreesC}.`);
+    var actualTemp = Number(tempData.degreesC).toFixed(2);
+
+  //exec('python ../MAX31865/dummy.py')
+    //.then(function (result) {
+      //var stdout = result.stdout;
+      //var stderr = result.stderr;
+      //var actualTemp;
+      //actualTemp = Number(stdout).toFixed(2);
+
+      // temp must be a number
+      // temp must be between 0 and 300
+      // if prevTemp > 0, temp - prevTemp must not be greater than 10
+      if (!isNaN(actualTemp) && actualTemp > 0 && actualTemp < 300) {
+        if (prevTemp > 0) {
+          if (actualTemp - prevTemp < 10) {
+            // this is probably a valid temp reading.
+            prevTemp = Number(actualTemp).toFixed(2);
+          }
+          else {
+            // the temp jumped too high since last loop. error detected.
+            logger.verbose(`Temp jump error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
+            actualTemp = Number(prevTemp).toFixed(2);
+          }
+        }
+        else {
+          // prev temp was 0, this loop just started.
+          // this is probably a valid temp reading.
+          prevTemp = Number(actualTemp).toFixed(2);
+        }
       }
       else {
-        prevTemp = Number(actualTemp).toFixed(2);
+        // the temp reading was NaN or out of bounds. error detected.
+        logger.verbose(`Temp range error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
+        actualTemp = Number(prevTemp).toFixed(2);
       }
+      
+      // if (!isNaN(actualTemp) && actualTemp > 0) {
+      //   if (actualTemp > 300 || actualTemp < 0 || (actualTemp - prevTemp) > 10) {
+      //     logger.verbose(`Temp error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
+      //     actualTemp = Number(prevTemp).toFixed(2);
+      //   }
+      //   else {
+      //     logger.verbose(`Temp reading: ${actualTemp}`);
+      //     prevTemp = Number(actualTemp).toFixed(2);  
+      //   }
+      // } 
+      // else {
+      //   logger.verbose(`Temp error 2! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
+      //   actualTemp = Number(prevTemp).toFixed(2);
+      // }
 
       if (SIMULATION_MODE && !hasHitTemp) {
         simulateTemp += 5;
@@ -146,7 +195,8 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         });
       }
 
-      logger.verbose("hasHitTemp: %s, actualTemp: %s, targetTemp: %s, refTemp: %s, Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", hasHitTemp, actualTemp, targetTemp, pidController.getRefTemperature(), now - windowStartTime, WindowSize, actualP, relayStatus);
+      // log every time through the pid loop. for debugging only.
+      logger.debug("hasHitTemp: %s, actualTemp: %s, targetTemp: %s, refTemp: %s, Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", hasHitTemp, actualTemp, targetTemp, pidController.getRefTemperature(), now - windowStartTime, WindowSize, actualP, relayStatus);
 
       if ((now - windowStartTime) > WindowSize) {
         // time to shift the Relay Window
@@ -154,8 +204,8 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         windowStartTime += WindowSize;
       }
       
-      // changed to > to try and prevent flipping while initially heating
-      if (actualP > (now - windowStartTime)) {
+      // changed to >= to try and prevent flipping while initially heating
+      if (actualP >= (now - windowStartTime)) {
           readVal = relayHeat.readSync();
           if (readVal == 0) {
             relayHeat.writeSync(1); // 0 is off on the ssr, 1 is on
@@ -194,6 +244,8 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
           }
         });
         prevLogTime = now;
+
+        logger.verbose("hasHitTemp: %s, actualTemp: %s, targetTemp: %s, refTemp: %s, Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", hasHitTemp, actualTemp, targetTemp, pidController.getRefTemperature(), now - windowStartTime, WindowSize, actualP, relayStatus);
 
         logger.info('Target:%s, Temp C:%s, Temp F:%s, ActualP:%s, Relay:%s, Temp Hit:%s, Temp Hold:%s min, Now:%s, Stop:%s',
           Number(pidController.getRefTemperature()).toFixed(2),
@@ -252,7 +304,8 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
           checkForNextStep();
         });
       }
-    }); // end of exec python then
+    //}); // end of exec python then
+  })
 }
 
 function cleanUp() {
