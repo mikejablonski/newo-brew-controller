@@ -32,7 +32,7 @@ const logger = new (winston.Logger)({
       timestamp: tsFormat,
       maxsize: 5242880, // 5 MB
       maxFiles: 10,
-      level: 'verbose' // env === 'development' ? 'debug' : 'info'
+      level: env === 'development' ? 'verbose' : 'info'
     })
   ]
 });
@@ -92,220 +92,197 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
   
   pidController.setPoint(targetTemp);
 
-  // request('http://localhost:3001/temp', { json: true }, (err, res, body) => {
-  //   if (err) { return console.log(err); }
-  //   logger.verbose(`Temp from api ${body.degreesC}.`);
-  // });
   var rpOptions = {
     uri: 'http://localhost:3001/temp',
     json: true // Automatically parses the JSON string in the response
   }
 
   rp(rpOptions).then(function(tempData) {
-    //logger.verbose(`Temp from api ${tempData.degreesC}.`);
+    logger.debug(`Temp from api ${tempData.degreesC}.`);
     var actualTemp = Number(tempData.degreesC).toFixed(2);
 
-  //exec('python ../MAX31865/dummy.py')
-    //.then(function (result) {
-      //var stdout = result.stdout;
-      //var stderr = result.stderr;
-      //var actualTemp;
-      //actualTemp = Number(stdout).toFixed(2);
-
-      // temp must be a number
-      // temp must be between 0 and 300
-      // if prevTemp > 0, temp - prevTemp must not be greater than 10
-      if (!isNaN(actualTemp) && actualTemp > 0 && actualTemp < 300) {
-        if (prevTemp > 0) {
-          if (actualTemp - prevTemp < 10) {
-            // this is probably a valid temp reading.
-            prevTemp = Number(actualTemp).toFixed(2);
-          }
-          else {
-            // the temp jumped too high since last loop. error detected.
-            logger.verbose(`Temp jump error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
-            actualTemp = Number(prevTemp).toFixed(2);
-          }
-        }
-        else {
-          // prev temp was 0, this loop just started.
+    // temp must be a number
+    // temp must be between 0 and 300
+    // if prevTemp > 0, temp - prevTemp must not be greater than 10
+    if (!isNaN(actualTemp) && actualTemp > 0 && actualTemp < 300) {
+      if (prevTemp > 0) {
+        if (actualTemp - prevTemp < 10) {
           // this is probably a valid temp reading.
           prevTemp = Number(actualTemp).toFixed(2);
         }
+        else {
+          // the temp jumped too high since last loop. error detected.
+          logger.verbose(`Temp jump error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
+          actualTemp = Number(prevTemp).toFixed(2);
+        }
       }
       else {
-        // the temp reading was NaN or out of bounds. error detected.
-        logger.verbose(`Temp range error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
-        actualTemp = Number(prevTemp).toFixed(2);
+        // prev temp was 0, this loop just started.
+        // this is probably a valid temp reading.
+        prevTemp = Number(actualTemp).toFixed(2);
       }
-      
-      // if (!isNaN(actualTemp) && actualTemp > 0) {
-      //   if (actualTemp > 300 || actualTemp < 0 || (actualTemp - prevTemp) > 10) {
-      //     logger.verbose(`Temp error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
-      //     actualTemp = Number(prevTemp).toFixed(2);
-      //   }
-      //   else {
-      //     logger.verbose(`Temp reading: ${actualTemp}`);
-      //     prevTemp = Number(actualTemp).toFixed(2);  
-      //   }
-      // } 
-      // else {
-      //   logger.verbose(`Temp error 2! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
-      //   actualTemp = Number(prevTemp).toFixed(2);
-      // }
+    }
+    else {
+      // the temp reading was NaN or out of bounds. error detected.
+      logger.verbose(`Temp range error! Read ${actualTemp}, using prevTemp of ${prevTemp} instead.`);
+      actualTemp = Number(prevTemp).toFixed(2);
+    }
 
-      if (SIMULATION_MODE && !hasHitTemp) {
-        simulateTemp += 5;
-        actualTemp = simulateTemp;
-        logger.verbose("[SIMULATION MODE] Setting temp to ", actualTemp);
-        tempHoldTime = 0.25;
-      }
+    if (SIMULATION_MODE && !hasHitTemp) {
+      simulateTemp += 5;
+      actualTemp = simulateTemp;
+      logger.verbose("[SIMULATION MODE] Setting temp to ", actualTemp);
+      tempHoldTime = 0.25;
+    }
 
-      // get the "power" value from the pid logic
-      actualP = pidController.calculate(actualTemp);	// call with the actual temp
-      var now = new Date().getTime();
+    // get the "power" value from the pid logic
+    actualP = pidController.calculate(actualTemp);	// call with the actual temp
+    var now = new Date().getTime();
+    
+    if (!hasHitTemp && (actualTemp >= pidController.getRefTemperature())) {
+      hasHitTemp = true;
+      tempHitTime = now;
+      tempStopTime = new Date(tempHitTime + tempHoldTime * 60000);
       
-      if (!hasHitTemp && (actualTemp >= pidController.getRefTemperature())) {
-        hasHitTemp = true;
-        tempHitTime = now;
-        tempStopTime = new Date(tempHitTime + tempHoldTime * 60000);
-        
-        // log the mash or boil start to the database
-        if (brewSession.step == 3) { // mash
-          logger.verbose(`looking for ${targetTemp}, ${tempHoldTime}`);
-          // find the mash step we are working with
-          mashStep = brewSession.mashSteps.find(function(ms) {
-            logger.verbose(`find check ${ms.temp}, ${ms.time}`);
-            return (ms.temp == targetTemp);
-          });
-          mashStep.mashStartTime = tempHitTime;
-          mashStep.formattedMashStartTime = dateFormat(tempHitTime, "hh:MM:ss TT");  
-        }
-        if (brewSession.step == 5) { // boil
-          brewSession.boil.boilStartTime = tempHitTime;
-          brewSession.boil.formattedBoilStartTime = dateFormat(tempHitTime, "hh:MM:ss TT");
-        }
-        
-        brewSessionCollection.update(brewSession);
-        db.saveDatabase(function(err) {
-          logger.info('Save database completed. Pid hit temp start time.');
-          if (err) {
-            logger.error('Save database error.', {error: err});
-          }
+      // log the mash or boil start to the database
+      if (brewSession.step == 3) { // mash
+        logger.verbose(`looking for ${targetTemp}, ${tempHoldTime}`);
+        // find the mash step we are working with
+        mashStep = brewSession.mashSteps.find(function(ms) {
+          logger.verbose(`find check ${ms.temp}, ${ms.time}`);
+          return (ms.temp == targetTemp);
         });
+        mashStep.mashStartTime = tempHitTime;
+        mashStep.formattedMashStartTime = dateFormat(tempHitTime, "hh:MM:ss TT");  
       }
-
-      // log every time through the pid loop. for debugging only.
-      logger.debug("hasHitTemp: %s, actualTemp: %s, targetTemp: %s, refTemp: %s, Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", hasHitTemp, actualTemp, targetTemp, pidController.getRefTemperature(), now - windowStartTime, WindowSize, actualP, relayStatus);
-
-      if ((now - windowStartTime) > WindowSize) {
-        // time to shift the Relay Window
-        //logger.verbose("Shift relay window.");
-        windowStartTime += WindowSize;
+      if (brewSession.step == 5) { // boil
+        brewSession.boil.boilStartTime = tempHitTime;
+        brewSession.boil.formattedBoilStartTime = dateFormat(tempHitTime, "hh:MM:ss TT");
       }
       
-      // changed to >= to try and prevent flipping while initially heating
-      if (actualP >= (now - windowStartTime)) {
-          readVal = relayHeat.readSync();
-          if (readVal == 0) {
-            relayHeat.writeSync(1); // 0 is off on the ssr, 1 is on
-            logger.verbose("Turning heat on. Now-windowStartTime: %s, WindowSize: %s, actualP: %s", now - windowStartTime, WindowSize, actualP);
-          }
-          relayStatus = "ON ";
-      }
-      else {
-          readVal = relayHeat.readSync();
-          if (readVal == 1) {
-            relayHeat.writeSync(0); // 0 is off on the ssr, 1 is on
-            logger.verbose("Turning heat off. Now-windowStartTime: %s, WindowSize: %s, actualP: %s", now - windowStartTime, WindowSize, actualP);
-          }
-          relayStatus = "OFF";
-      }
-
-      // check if we need to log this temp to the database for this brew session
-      // and output to the console
-      // TODO: Check if changing this to >= fixes logging bug.
-      if (!prevLogTime || (now - prevLogTime >= logTimeSpan)) {
-        // log this temp in the database
-        var logDate = new Date().getTime();
-        brewSession.mashTempData.push(
-          {
-            time: logDate,
-            formattedTime: dateFormat(logDate, "hh:MM:ss TT"),
-            tempC: Math.round(actualTemp * 100) / 100,
-            tempF: Math.round((actualTemp * 9/5 + 32) * 100) / 100
-          }
-        );
-        brewSessionCollection.update(brewSession);
-        db.saveDatabase(function(err) {
-          //logger.info('Save database completed.');
-          if (err) {
-            logger.error('Save database error.', {error: err})
-          }
-        });
-        prevLogTime = now;
-
-        logger.verbose("hasHitTemp: %s, actualTemp: %s, targetTemp: %s, refTemp: %s, Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", hasHitTemp, actualTemp, targetTemp, pidController.getRefTemperature(), now - windowStartTime, WindowSize, actualP, relayStatus);
-
-        logger.info('Target:%s, Temp C:%s, Temp F:%s, ActualP:%s, Relay:%s, Temp Hit:%s, Temp Hold:%s min, Now:%s, Stop:%s',
-          Number(pidController.getRefTemperature()).toFixed(2),
-          Number(actualTemp).toFixed(2),
-          Number(actualTemp * 9/5 + 32).toFixed(2),
-          actualP,
-          relayStatus,
-          tempHitTime ? dateFormat(tempHitTime, "hh:MM:ss:L TT") : "TBD",
-          tempHoldTime,
-          dateFormat(now, "hh:MM:ss:L TT"),
-          tempStopTime ? dateFormat(tempStopTime, "hh:MM:ss:L TT"): "TBD");
-      }
-
-      // keep calling pid until we hit our temp hold time
-      if (!tempHitTime || (tempHitTime + tempHoldTime * 60000) > now) {
-        pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
-      }
-      else {
-        logger.info("Pid loop complete.")
-        var logDate = new Date().getTime();
-        
-        // log the pid end to the database
-        
-        // update some brew session details depending on the step
-        if (brewSession.step == 3) { // mash
-          // find the mash step we are working with
-          mashStep = brewSession.mashSteps.find(function(ms) {
-            return (ms.temp == targetTemp);
-          });
-          mashStep.mashEndTime = logDate;
-          mashStep.formattedMashEndTime = dateFormat(logDate, "hh:MM:ss TT");
+      brewSessionCollection.update(brewSession);
+      db.saveDatabase(function(err) {
+        logger.info('Save database completed. Pid hit temp start time.');
+        if (err) {
+          logger.error('Save database error.', {error: err});
         }
-        if (brewSession.step == 5) { // boil
-          brewSession.boil.boilEndTime = logDate;
-          brewSession.boil.formattedBoilEndTime = dateFormat(logDate, "hh:MM:ss TT");
-        }
-        
-        // turn off the heater
+      });
+    }
+
+    // log every time through the pid loop. for debugging only.
+    logger.debug("hasHitTemp: %s, actualTemp: %s, targetTemp: %s, refTemp: %s, Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", hasHitTemp, actualTemp, targetTemp, pidController.getRefTemperature(), now - windowStartTime, WindowSize, actualP, relayStatus);
+
+    if ((now - windowStartTime) > WindowSize) {
+      // time to shift the Relay Window
+      logger.debug("Shift relay window.");
+      windowStartTime += WindowSize;
+    }
+    
+    // changed to >= to try and prevent flipping while initially heating
+    if (actualP >= (now - windowStartTime)) {
         readVal = relayHeat.readSync();
         if (readVal == 0) {
-          relayHeat.writeSync(1); // 0 is on, 1 is off
-          logger.verbose("Turn off heater.");
+          relayHeat.writeSync(1); // 0 is off on the ssr, 1 is on
+          logger.verbose("Turning heat on. Now-windowStartTime: %s, WindowSize: %s, actualP: %s", now - windowStartTime, WindowSize, actualP);
         }
-
-        // increment the brew session step number
-        if (brewSession.step != 3) { // mashing can be multiple steps.
-          brewSession.step = brewSession.step + 1;
+        relayStatus = "ON ";
+    }
+    else {
+        readVal = relayHeat.readSync();
+        if (readVal == 1) {
+          relayHeat.writeSync(0); // 0 is off on the ssr, 1 is on
+          logger.verbose("Turning heat off. Now-windowStartTime: %s, WindowSize: %s, actualP: %s", now - windowStartTime, WindowSize, actualP);
         }
+        relayStatus = "OFF";
+    }
 
-        brewSessionCollection.update(brewSession);
-        db.saveDatabase(function(err) {
-          logger.info('Save database completed. Pid loop complete.');
-          if (err) {
-            logger.error('Save database error.', {error: err})
-          }
-          checkForNextStep();
+    // check if we need to log this temp to the database for this brew session
+    // and output to the console
+    // TODO: Check if changing this to >= fixes logging bug.
+    if (!prevLogTime || (now - prevLogTime >= logTimeSpan)) {
+      // log this temp in the database
+      var logDate = new Date().getTime();
+      brewSession.mashTempData.push(
+        {
+          time: logDate,
+          formattedTime: dateFormat(logDate, "hh:MM:ss TT"),
+          tempC: Math.round(actualTemp * 100) / 100,
+          tempF: Math.round((actualTemp * 9/5 + 32) * 100) / 100
+        }
+      );
+      brewSessionCollection.update(brewSession);
+      db.saveDatabase(function(err) {
+        logger.debug('Save database completed.');
+        if (err) {
+          logger.error('Save database error.', {error: err})
+        }
+      });
+      prevLogTime = now;
+
+      logger.verbose("hasHitTemp: %s, actualTemp: %s, targetTemp: %s, refTemp: %s, Now-windowStartTime: %s, WindowSize: %s, actualP: %s, relay: %s", hasHitTemp, actualTemp, targetTemp, pidController.getRefTemperature(), now - windowStartTime, WindowSize, actualP, relayStatus);
+
+      logger.info('Target:%s, Temp C:%s, Temp F:%s, ActualP:%s, Relay:%s, Temp Hit:%s, Temp Hold:%s min, Now:%s, Stop:%s',
+        Number(pidController.getRefTemperature()).toFixed(2),
+        Number(actualTemp).toFixed(2),
+        Number(actualTemp * 9/5 + 32).toFixed(2),
+        actualP,
+        relayStatus,
+        tempHitTime ? dateFormat(tempHitTime, "hh:MM:ss:L TT") : "TBD",
+        tempHoldTime,
+        dateFormat(now, "hh:MM:ss:L TT"),
+        tempStopTime ? dateFormat(tempStopTime, "hh:MM:ss:L TT"): "TBD");
+    }
+
+    // keep calling pid until we hit our temp hold time
+    if (!tempHitTime || (tempHitTime + tempHoldTime * 60000) > now) {
+      pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, hasHitTemp);
+    }
+    else {
+      logger.info("Pid loop complete.")
+      var logDate = new Date().getTime();
+      
+      // log the pid end to the database
+      
+      // update some brew session details depending on the step
+      if (brewSession.step == 3) { // mash
+        // find the mash step we are working with
+        mashStep = brewSession.mashSteps.find(function(ms) {
+          return (ms.temp == targetTemp);
         });
+        mashStep.mashEndTime = logDate;
+        mashStep.formattedMashEndTime = dateFormat(logDate, "hh:MM:ss TT");
       }
-    //}); // end of exec python then
+      if (brewSession.step == 5) { // boil
+        brewSession.boil.boilEndTime = logDate;
+        brewSession.boil.formattedBoilEndTime = dateFormat(logDate, "hh:MM:ss TT");
+      }
+      
+      // turn off the heater
+      readVal = relayHeat.readSync();
+      if (readVal == 0) {
+        relayHeat.writeSync(1); // 0 is on, 1 is off
+        logger.verbose("Turn off heater.");
+      }
+
+      // increment the brew session step number
+      if (brewSession.step != 3) { // mashing can be multiple steps.
+        brewSession.step = brewSession.step + 1;
+      }
+
+      brewSessionCollection.update(brewSession);
+      db.saveDatabase(function(err) {
+        logger.info('Save database completed. Pid loop complete.');
+        if (err) {
+          logger.error('Save database error.', {error: err})
+        }
+        checkForNextStep();
+      });
+    }
   })
+  .catch(function (err) {
+        logger.error(err);
+        logger.error('Caught error in request for temp.');
+  });
 }
 
 function cleanUp() {
@@ -355,7 +332,6 @@ function loadHandler() {
       // Brew session not found.
       logger.error('BrewSession not found!', {id: brewSessionId})
       cleanUp();
-      //process.exit(0);
     }
 
     // What is the brew session status?
@@ -376,6 +352,8 @@ function loadHandler() {
       // we are complete. just exit.
       cleanUp();
     }
+
+    logger.verbose('Exiting loadHandler.');
 }
 
 function moveValve() {
@@ -502,12 +480,16 @@ function checkForNextStep() {
 process.on('SIGINT', function() {
     logger.verbose("Received SIGINT. cleaning up before exit.");
     cleanUp();
-    //process.exit(0);
 });
 
 // handle kill process
 process.on('SIGTERM', function() {
     logger.verbose("Received SIGTERM. cleaning up before exit.");
     cleanUp();
-    //process.exit(0);
 });
+
+process.on('uncaughtException', function (err) {
+  logger.error((new Date).toUTCString() + ' uncaughtException:', err.message)
+  logger.error(err.stack)
+  cleanUp(); // todo: pass 1 here to signal the type of exit.
+})
