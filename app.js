@@ -344,7 +344,10 @@ function loadHandler() {
         logger.verbose("Turn on pump.");
       }
       // turn off the heat
-      relayHeat.writeSync(1); // 0 is on, 1 is off
+      //relayHeat.writeSync(1); // 0 is on, 1 is off
+      // TODO: validate this change. This seems like we want to turn off heat
+      // here and let the pid loop turn it on when needed.
+      relayHeat.writeSync(0); // 0 is off on the ssr, 1 is on
 
       checkForNextStep();
     }
