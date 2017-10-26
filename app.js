@@ -251,10 +251,12 @@ function pid(targetTemp, tempHoldTime, tempHitTime, tempStopTime, prevLogTime, h
         });
         mashStep.mashEndTime = logDate;
         mashStep.formattedMashEndTime = dateFormat(logDate, "hh:MM:ss TT");
+        logger.verbose('Setting mashEndTime for step with temp ' + mashStep.temp);
       }
       if (brewSession.step == 5) { // boil
         brewSession.boil.boilEndTime = logDate;
         brewSession.boil.formattedBoilEndTime = dateFormat(logDate, "hh:MM:ss TT");
+        logger.verbose('Setting boilEndTime.');
       }
       
       // turn off the heater
@@ -318,8 +320,10 @@ function cleanUp() {
 }
 
 function loadHandler() {
-    logger.info("Starting session for brew session number %d.", brewSessionId);
-
+    logger.info("Starting controller for brew session number %d.", brewSessionId);
+    if (SIMULATION_MODE) {
+      logger.info("Simulation Mode is enabled.");
+    }
     // if database did not exist it will be empty so I will intitialize here
     brewSessionCollection = db.getCollection('brewSessions');
     if (brewSessionCollection === null) {
@@ -334,19 +338,29 @@ function loadHandler() {
       cleanUp();
     }
 
+    // update the last started time.
+    brewSession.lastStarted = new Date().getTime();
+    brewSessionCollection.update(brewSession);
+    db.saveDatabase(function(err) {
+      if (err) {
+        logger.error('Save database error.', {error: err})
+      }
+    });
+
     // What is the brew session status?
     // 1 = Stopped, 2 = Running, 3 = Complete
     if (brewSession.status != 3) { // status 3 = completed
       // turn on the pump
       readVal = relayPump.readSync();
       if (readVal == 0) {
+        logger.verbose("Turning on pump.");
         relayPump.writeSync(0); // 0 is on, 1 is off
-        logger.verbose("Turn on pump.");
       }
       // turn off the heat
       //relayHeat.writeSync(1); // 0 is on, 1 is off
       // TODO: validate this change. This seems like we want to turn off heat
       // here and let the pid loop turn it on when needed.
+      logger.verbose("Turning off heat on in loadHandler.");
       relayHeat.writeSync(0); // 0 is off on the ssr, 1 is on
 
       checkForNextStep();
