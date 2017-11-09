@@ -1,5 +1,5 @@
 // usage
-// node app.js <BrewSessionId>
+// node app.js <BrewSessionId> <SimulationModeBool(Optional)>
 // example:
 // sudo node app.js 1
 
@@ -39,10 +39,19 @@ const logger = new (winston.Logger)({
 
 // read the command line args
 if (process.argv.length < 3) {
-  console.log("Usage: sudo node app.js <BrewSessionId>");
+  console.log("Usage: sudo node app.js <BrewSessionId> <SimulationModeBool(Optional)>");
   process.exit();
 }
 var brewSessionId = process.argv[2];  // the brew session id
+
+if (process.argv.length == 4) {
+  // read the simulation mode boolean
+  if (process.argv[3] == "true") {
+    logger.info('Starting controller in simulation mode.');
+    SIMULATION_MODE = true;
+  }
+}
+
 var brewSession;
 
 var loki = require('lokijs');
@@ -63,7 +72,7 @@ var actualTemp = 0;
 var WindowSize = 5000;
 
 var exec = require('child-process-promise').exec;
-var logTimeSpan = 5000; // time between log entries in ms
+var logTimeSpan = 15000; // time between log entries in ms
 
 pidController = new liquidPID({
   Pmax: WindowSize, // Max power (output) [Window Size]
